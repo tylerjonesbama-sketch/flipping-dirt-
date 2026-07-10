@@ -12,6 +12,7 @@
   body { background: #0C1008; }
   input, select, textarea, button { font-family: inherit; }
   ::placeholder { color: #3A4030; }
+  input[type="range"] { accent-color: #6BAE75; height: 26px; }
 </style>
 </head>
 <body>
@@ -65,7 +66,8 @@ const P = {
 };
 
 // ─── STORAGE (localStorage — persists per browser/device) ──────────────────
-const KEY = "landflip:deals:v2";
+const KEY  = "landflip:deals:v2";
+const BKEY = "landflip:budget:v1";
 
 async function loadDeals() {
   try { const v = localStorage.getItem(KEY); return v ? JSON.parse(v) : []; }
@@ -73,6 +75,51 @@ async function loadDeals() {
 }
 async function saveDeals(d) {
   try { localStorage.setItem(KEY, JSON.stringify(d)); } catch { }
+}
+function loadBudget() {
+  try { const v = localStorage.getItem(BKEY); return v ? JSON.parse(v) : { cash: "", reserve: "", mail: "" }; }
+  catch { return { cash: "", reserve: "", mail: "" }; }
+}
+function saveBudget(b) {
+  try { localStorage.setItem(BKEY, JSON.stringify(b)); } catch { }
+}
+
+// ─── BUDGET MATH (shared by Budget tab, Dashboard, Analyzer) ─────────────────
+// Committed = money locked in deals under contract. Pending = offers out that
+// could still be accepted. Available = what you can safely deploy today.
+function computeBudget(budget, deals) {
+  const cash    = Number(budget.cash)    || 0;
+  const reserve = Number(budget.reserve) || 0;
+  const mail    = Number(budget.mail)    || 0;
+
+  const committed = deals
+    .filter(d => d.stage === "Under Contract")
+    .reduce((s, d) => s + (Number(d.offerPrice) || 0), 0);
+
+  const pending = deals
+    .filter(d => d.stage === "Offer Sent")
+    .reduce((s, d) => s + (Number(d.offerPrice) || 0), 0);
+
+  const available   = Math.max(0, cash - reserve - mail - committed);
+  const maxPurchase = Math.floor(available / 1.03);          // leaves room for ~3% closing
+  const maxClosing  = available - maxPurchase;
+
+  // Deal capacity: how many typical deals fit in available capital.
+  // Uses your avg active offer if you have one, else a $5,000 default.
+  const activeOffers = deals
+    .filter(d => ["Offer Sent", "Under Contract"].includes(d.stage))
+    .map(d => Number(d.offerPrice) || 0)
+    .filter(v => v > 0);
+  const typicalOffer = activeOffers.length
+    ? Math.round(activeOffers.reduce((s, v) => s + v, 0) / activeOffers.length)
+    : 5000;
+  const typicalAllIn = Math.round(typicalOffer * 1.03);
+  const capacity     = typicalAllIn > 0 ? Math.floor(available / typicalAllIn) : 0;
+
+  const isSet = cash > 0;
+  const overExtended = pending > available;
+
+  return { cash, reserve, mail, committed, pending, available, maxPurchase, maxClosing, typicalOffer, typicalAllIn, capacity, isSet, overExtended };
 }
 
 // ─── CLAUDE API (via /api/claude serverless proxy) ──────────────────────────
@@ -168,7 +215,7 @@ function ProgressBar({ pct, color = P.green, height = 10 }) {
 }
 
 // ─── DASHBOARD ──────────────────────────────────────────────────────────────
-function Dashboard({ deals }) {
+function Dashboard({ deals, budget }) {
   const closed  = deals.filter(d => d.stage === "Closed");
   const ytd     = closed.reduce((s, d) => s + (Number(d.profit) || 0), 0);
   const pipeline = deals.filter(d => !["Closed","Dead"].includes(d.stage)).reduce((s, d) => s + (Number(d.estimatedProfit) || 0), 0);
@@ -176,6 +223,15 @@ function Dashboard({ deals }) {
   const left    = Math.max(0, GOAL - ytd);
   const dealsLeft = Math.max(0, Math.ceil(left / AVG_DEAL));
   const active  = deals.filter(d => !["Closed","Dead"].includes(d.stage)).length;
+  const B       = computeBudget(budget, deals);
+
+  const stats = [
+    { l: "YTD Income",     v: `$${ytd.toLocaleString()}`,      c: P.greenBr },
+    { l: "Deals Closed",   v: closed.length,                   c: P.text },
+    { l: "Pipeline Value", v: `$${pipeline.toLocaleString()}`, c: P.amber },
+    { l: "Active Deals",   v: active,                          c: P.purple },
+  ];
+  if (B.isSet) stats.push({ l: "Available Capital", v: `$${B.available.toLocaleString()}`, c: P.blue });
 
   return (
     <div>
@@ -198,18 +254,22 @@ function Dashboard({ deals }) {
       </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
-        {[
-          { l: "YTD Income",     v: `$${ytd.toLocaleString()}`,      c: P.greenBr },
-          { l: "Deals Closed",   v: closed.length,                   c: P.text },
-          { l: "Pipeline Value", v: `$${pipeline.toLocaleString()}`, c: P.amber },
-          { l: "Active Deals",   v: active,                          c: P.purple },
-        ].map(({ l, v, c }) => (
+        {stats.map(({ l, v, c }) => (
           <Card key={l} style={{ textAlign: "center" }}>
             <div style={{ fontSize: 24, fontWeight: 900, color: c, letterSpacing: "-0.02em" }}>{v}</div>
             <div style={{ fontSize: 11, color: P.muted, marginTop: 5 }}>{l}</div>
           </Card>
         ))}
       </div>
+
+      {B.isSet && B.overExtended && (
+        <Card style={{ marginBottom: 16, background: "#1A1400", border: `1px solid ${P.amber}66` }}>
+          <div style={{ fontSize: 13, color: P.amber, lineHeight: 1.6 }}>
+            ⚠️ <strong>Over-extended:</strong> You have ${B.pending.toLocaleString()} in offers out but only ${B.available.toLocaleString()} available.
+            If everything gets accepted, you can't fund it all. Details in the Budget tab.
+          </div>
+        </Card>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, marginBottom: 14 }}>
         <Card>
@@ -269,6 +329,107 @@ function Dashboard({ deals }) {
           ))}
         </div>
       </Card>
+    </div>
+  );
+}
+
+// ─── BUDGET ENGINE ──────────────────────────────────────────────────────────
+function BudgetEngine({ deals, budget, setBudget }) {
+  const B = computeBudget(budget, deals);
+
+  const upd = k => v => {
+    const next = { ...budget, [k]: v };
+    setBudget(next);
+    saveBudget(next);
+  };
+
+  const flow = [
+    { l: "Total Cash",        v: B.cash,      c: P.text,   sign: ""  },
+    { l: "Reserve (never touch)", v: B.reserve, c: P.amber, sign: "−" },
+    { l: "Mail Budget",       v: B.mail,      c: P.amber,  sign: "−" },
+    { l: "Committed (under contract)", v: B.committed, c: P.purple, sign: "−" },
+  ];
+
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontWeight: 900, fontSize: 20, color: P.text, letterSpacing: "-0.02em" }}>💰 Budget Engine</div>
+        <div style={{ color: P.muted, fontSize: 13, marginTop: 4 }}>Your CFO. It always knows what you can afford — so you never over-commit.</div>
+      </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        <Label>Your Numbers</Label>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+          <Inp label="Total Cash ($)" value={budget.cash} onChange={upd("cash")} type="number" placeholder="10000" />
+          <Inp label="Reserve — Safety Net ($)" value={budget.reserve} onChange={upd("reserve")} type="number" placeholder="2000" />
+          <Inp label="Mail / Marketing Budget ($)" value={budget.mail} onChange={upd("mail")} type="number" placeholder="300" />
+        </div>
+        <div style={{ fontSize: 11, color: P.muted, lineHeight: 1.5 }}>
+          Saved automatically. Committed capital updates itself from your Pipeline as deals go under contract.
+        </div>
+      </Card>
+
+      {!B.isSet ? (
+        <Card style={{ textAlign: "center", padding: 34 }}>
+          <div style={{ fontSize: 30, marginBottom: 8 }}>💵</div>
+          <div style={{ fontWeight: 700, color: P.text, marginBottom: 4 }}>Enter your total cash to activate the engine</div>
+          <div style={{ fontSize: 12, color: P.muted }}>Everything below calculates automatically once it knows your starting capital.</div>
+        </Card>
+      ) : (
+        <React.Fragment>
+          <Card style={{ marginBottom: 14, background: P.card2 }}>
+            <Label>Capital Flow</Label>
+            {flow.map(({ l, v, c, sign }) => (
+              <div key={l} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${P.border}`, fontSize: 13 }}>
+                <span style={{ color: P.muted }}>{l}</span>
+                <span style={{ fontWeight: 800, color: c }}>{sign}${v.toLocaleString()}</span>
+              </div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 12 }}>
+              <span style={{ fontWeight: 800, color: P.text, fontSize: 14 }}>Available to Invest</span>
+              <span style={{ fontWeight: 900, color: P.greenBr, fontSize: 22, letterSpacing: "-0.02em" }}>${B.available.toLocaleString()}</span>
+            </div>
+          </Card>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 14 }}>
+            <Card style={{ textAlign: "center", border: `1px solid ${P.green}55` }}>
+              <div style={{ fontSize: 26, fontWeight: 900, color: P.greenBr, letterSpacing: "-0.02em" }}>${B.maxPurchase.toLocaleString()}</div>
+              <div style={{ fontSize: 11, color: P.muted, marginTop: 5 }}>Max Purchase Today</div>
+              <div style={{ fontSize: 10, color: P.faint, marginTop: 2 }}>leaves ~3% for closing</div>
+            </Card>
+            <Card style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 26, fontWeight: 900, color: P.blue, letterSpacing: "-0.02em" }}>${B.maxClosing.toLocaleString()}</div>
+              <div style={{ fontSize: 11, color: P.muted, marginTop: 5 }}>Set Aside for Closing</div>
+              <div style={{ fontSize: 10, color: P.faint, marginTop: 2 }}>deed prep, recording, notary</div>
+            </Card>
+            <Card style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 26, fontWeight: 900, color: P.purple, letterSpacing: "-0.02em" }}>{B.capacity}</div>
+              <div style={{ fontSize: 11, color: P.muted, marginTop: 5 }}>Deal Capacity</div>
+              <div style={{ fontSize: 10, color: P.faint, marginTop: 2 }}>at ~${B.typicalAllIn.toLocaleString()} all-in each</div>
+            </Card>
+          </div>
+
+          {B.pending > 0 && (
+            <Card style={{ background: B.overExtended ? "#1A1400" : "#0D1F0D", border: `1px solid ${B.overExtended ? P.amber : P.green}44`, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, color: B.overExtended ? P.amber : P.green, lineHeight: 1.65 }}>
+                {B.overExtended
+                  ? <span>⚠️ <strong>Careful:</strong> ${B.pending.toLocaleString()} in offers are out, but only ${B.available.toLocaleString()} is available. If more than {B.capacity} get{B.capacity === 1 ? "s" : ""} accepted, you'll have to back out or find capital. Consider pausing new offers until something resolves.</span>
+                  : <span>📬 <strong>Offers outstanding:</strong> ${B.pending.toLocaleString()} across your "Offer Sent" deals. If all accepted, you'd still have ${(B.available - B.pending).toLocaleString()} left — you're within budget.</span>}
+              </div>
+            </Card>
+          )}
+
+          <Card style={{ background: P.card2 }}>
+            <Label>How the Engine Protects You</Label>
+            <div style={{ fontSize: 12, color: P.muted, lineHeight: 1.8 }}>
+              1. Your reserve is untouchable — the engine never counts it as investable.<br />
+              2. Money goes to "Committed" the moment a deal hits Under Contract in your Pipeline.<br />
+              3. Max Purchase already accounts for ~3% closing costs, so the number you see is the number you can actually offer.<br />
+              4. The Deal Analyzer checks every simulated purchase against this budget automatically.
+            </div>
+          </Card>
+        </React.Fragment>
+      )}
     </div>
   );
 }
@@ -371,14 +532,118 @@ function MarketScout() {
   );
 }
 
+// ─── PROFIT SIMULATOR ───────────────────────────────────────────────────────
+function ProfitSimulator({ mv, budgetInfo }) {
+  const lo = Math.max(100, Math.round(mv * 0.10 / 100) * 100);
+  const hi = Math.round(mv * 0.60 / 100) * 100;
+  const [price, setPrice] = useState(Math.round(mv * 0.30 / 100) * 100);
+  const [hold,  setHold]  = useState(90);
+
+  // Re-center slider when market value changes
+  useEffect(() => { setPrice(Math.round(mv * 0.30 / 100) * 100); }, [mv]);
+
+  const closing    = Math.round(mv * 0.03);
+  const cashReq    = price + closing;
+  const profit     = mv - cashReq;
+  const roi        = cashReq > 0 ? (profit / cashReq) * 100 : 0;
+  const annual     = hold > 0 ? roi * (365 / hold) : 0;
+  const discount   = mv > 0 ? (price / mv) * 100 : 0;
+
+  const discountColor = discount <= 35 ? P.greenBr : discount <= 45 ? P.amber : P.red;
+  const discountLabel = discount <= 25 ? "Aggressive — home run if accepted"
+    : discount <= 35 ? "In the buy zone (25–35¢)"
+    : discount <= 45 ? "Thin margin — negotiate down"
+    : "Too rich — walk or counter hard";
+
+  // Budget check
+  let budgetCheck = null;
+  if (budgetInfo && budgetInfo.isSet) {
+    const over = cashReq - budgetInfo.available;
+    budgetCheck = over <= 0
+      ? { ok: true,  msg: `✅ Within budget — leaves $${(-over).toLocaleString()} available after this deal.` }
+      : { ok: false, msg: `🚫 Over budget by $${over.toLocaleString()}. Your Budget Engine says max purchase today is $${budgetInfo.maxPurchase.toLocaleString()}.` };
+  }
+
+  return (
+    <React.Fragment>
+      <div style={{ fontWeight: 700, fontSize: 13, color: P.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Profit Simulator</div>
+      <Card style={{ marginBottom: 22, border: `1px solid ${P.green}44` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4, flexWrap: "wrap", gap: 6 }}>
+          <Label>Purchase Price — drag to simulate</Label>
+          <span style={{ fontWeight: 900, fontSize: 24, color: P.text, letterSpacing: "-0.02em" }}>${price.toLocaleString()}</span>
+        </div>
+        <input
+          type="range" min={lo} max={hi} step={100} value={price}
+          onChange={e => setPrice(Number(e.target.value))}
+          style={{ width: "100%" }}
+        />
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: P.faint, marginBottom: 12 }}>
+          <span>${lo.toLocaleString()} (10¢)</span>
+          <span>${hi.toLocaleString()} (60¢)</span>
+        </div>
+
+        <div style={{ textAlign: "center", marginBottom: 14 }}>
+          <Badge color={discountColor} style={{ fontSize: 12 }}>
+            {discount.toFixed(0)}¢ on the dollar · {discountLabel}
+          </Badge>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, textAlign: "center", marginBottom: 14 }}>
+          {[
+            { l: "Est. Profit",   v: `${profit >= 0 ? "+" : "−"}$${Math.abs(profit).toLocaleString()}`, c: profit >= 0 ? P.greenBr : P.red },
+            { l: "ROI",           v: `${roi.toFixed(0)}%`,                    c: P.amber },
+            { l: "Cash Required", v: `$${cashReq.toLocaleString()}`,          c: P.blue },
+            { l: "Annualized",    v: `${annual.toFixed(0)}%`,                 c: P.purple },
+          ].map(({ l, v, c }) => (
+            <div key={l} style={{ background: P.bg, borderRadius: 8, padding: "12px 8px", border: `1px solid ${P.border}` }}>
+              <div style={{ fontSize: 19, fontWeight: 900, color: c, letterSpacing: "-0.02em" }}>{v}</div>
+              <div style={{ fontSize: 10, color: P.muted, marginTop: 4 }}>{l}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 2 }}>
+          <Label>Estimated Days to Sell</Label>
+          <span style={{ fontWeight: 800, fontSize: 14, color: P.text }}>{hold} days</span>
+        </div>
+        <input
+          type="range" min={30} max={365} step={15} value={hold}
+          onChange={e => setHold(Number(e.target.value))}
+          style={{ width: "100%" }}
+        />
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: P.faint }}>
+          <span>30 days</span><span>1 year</span>
+        </div>
+
+        {budgetCheck && (
+          <div style={{
+            marginTop: 14, padding: "10px 14px", borderRadius: 7, fontSize: 13, lineHeight: 1.5,
+            background: budgetCheck.ok ? "#0D1F0D" : "#1A0E0C",
+            border: `1px solid ${budgetCheck.ok ? P.green : P.red}44`,
+            color: budgetCheck.ok ? P.greenBr : P.red,
+          }}>
+            {budgetCheck.msg}
+          </div>
+        )}
+        {(!budgetInfo || !budgetInfo.isSet) && (
+          <div style={{ marginTop: 14, fontSize: 11, color: P.muted }}>
+            💡 Set your capital in the Budget tab and the simulator will check every price against what you can actually afford.
+          </div>
+        )}
+      </Card>
+    </React.Fragment>
+  );
+}
+
 // ─── DEAL ANALYZER ──────────────────────────────────────────────────────────
-function DealAnalyzer() {
+function DealAnalyzer({ deals, budget }) {
   const [mktVal, setMktVal] = useState("");
   const [askPx,  setAskPx]  = useState("");
   const [acres,  setAcres]  = useState("");
 
   const mv = Number(mktVal) || 0;
   const ap = Number(askPx) || 0;
+  const budgetInfo = computeBudget(budget, deals);
 
   const closing = Math.round(mv * 0.03);
 
@@ -404,7 +669,7 @@ function DealAnalyzer() {
     <div>
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontWeight: 900, fontSize: 20, color: P.text, letterSpacing: "-0.02em" }}>📊 Deal Analyzer</div>
-        <div style={{ color: P.muted, fontSize: 13, marginTop: 4 }}>Instant offer calculations and owner-finance projections.</div>
+        <div style={{ color: P.muted, fontSize: 13, marginTop: 4 }}>Instant offer calculations, live profit simulation, and owner-finance projections.</div>
       </div>
 
       <Card style={{ marginBottom: 16 }}>
@@ -422,6 +687,8 @@ function DealAnalyzer() {
 
       {mv > 0 && (
         <React.Fragment>
+          <ProfitSimulator mv={mv} budgetInfo={budgetInfo} />
+
           <div style={{ fontWeight: 700, fontSize: 13, color: P.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Cash Flip Scenarios</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 22 }}>
             {scenarios.map(({ pct, label, note }) => {
@@ -802,16 +1069,18 @@ function DueDiligence({ deals, setDeals }) {
 
 // ─── ROOT ────────────────────────────────────────────────────────────────────
 function App() {
-  const [tab,   setTab]   = useState("dash");
-  const [deals, setDeals] = useState([]);
-  const [ready, setReady] = useState(false);
+  const [tab,    setTab]    = useState("dash");
+  const [deals,  setDeals]  = useState([]);
+  const [budget, setBudget] = useState({ cash: "", reserve: "", mail: "" });
+  const [ready,  setReady]  = useState(false);
 
   useEffect(() => {
-    loadDeals().then(d => { setDeals(d); setReady(true); });
+    loadDeals().then(d => { setDeals(d); setBudget(loadBudget()); setReady(true); });
   }, []);
 
   const tabs = [
     { id: "dash",     icon: "🏠", label: "Dashboard" },
+    { id: "budget",   icon: "💰", label: "Budget" },
     { id: "scout",    icon: "🔍", label: "Market Scout" },
     { id: "analyzer", icon: "📊", label: "Deal Analyzer" },
     { id: "offer",    icon: "✉️", label: "Offer Writer" },
@@ -858,12 +1127,13 @@ function App() {
       </div>
 
       <div style={{ padding: "22px 20px", maxWidth: 980, margin: "0 auto" }}>
-        {tab === "dash"     && <Dashboard     deals={deals} />}
+        {tab === "dash"     && <Dashboard    deals={deals} budget={budget} />}
+        {tab === "budget"   && <BudgetEngine deals={deals} budget={budget} setBudget={setBudget} />}
         {tab === "scout"    && <MarketScout />}
-        {tab === "analyzer" && <DealAnalyzer />}
+        {tab === "analyzer" && <DealAnalyzer deals={deals} budget={budget} />}
         {tab === "offer"    && <OfferWriter />}
-        {tab === "pipeline" && <Pipeline      deals={deals} setDeals={setDeals} />}
-        {tab === "dd"       && <DueDiligence  deals={deals} setDeals={setDeals} />}
+        {tab === "pipeline" && <Pipeline     deals={deals} setDeals={setDeals} />}
+        {tab === "dd"       && <DueDiligence deals={deals} setDeals={setDeals} />}
       </div>
     </div>
   );
