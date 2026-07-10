@@ -155,10 +155,10 @@ function computeBudget(budget, deals) {
 }
 
 // ─── CLAUDE API (via /api/claude serverless proxy) ──────────────────────────
-async function askClaude(prompt, system, webSearch = false) {
+async function askClaude(prompt, system, webSearch = false, maxTokens = 1500) {
   const body = {
     model: "claude-sonnet-4-6",
-    max_tokens: 1500,
+    max_tokens: maxTokens,
     system,
     messages: [{ role: "user", content: prompt }],
   };
@@ -667,11 +667,137 @@ function ProfitSimulator({ mv, budgetInfo }) {
   );
 }
 
+// ─── DEAL FINDER ────────────────────────────────────────────────────────────
+function DealFinder({ deals, budget, onAnalyze }) {
+  const B = computeBudget(budget, deals);
+  const [county,   setCounty]   = useState("");
+  const [state,    setState]    = useState("Florida");
+  const [maxPrice, setMaxPrice] = useState(B.isSet ? String(B.maxPurchase) : "");
+  const [loading,  setLoading]  = useState(false);
+  const [result,   setResult]   = useState(null);
+  const [err,      setErr]      = useState("");
+
+  const gradeColor = g => g === "HOT" ? P.greenBr : g === "WORTH A LOOK" ? P.amber : P.muted;
+
+  const run = async () => {
+    if (!county || !state || !maxPrice) return;
+    setLoading(true); setErr(""); setResult(null);
+    try {
+      const text = await askClaude(
+        `Find current for-sale vacant land listings in ${county} County, ${state} priced at or under $${Number(maxPrice).toLocaleString()}. I'm a land flipper: I buy small rural parcels (roughly 1-10 acres) at a deep discount and resell. Search LandWatch, Land.com, Zillow land, LandSearch, and similar sites for the cheapest legitimate parcels. For each, estimate its full market value from comparable listings so I can judge the discount.`,
+        `You are a land acquisition scout. Search the web for real, currently listed vacant land parcels matching the criteria. Return ONLY valid JSON, no markdown, no backticks, no preamble. Schema: {"searchSummary": string (1 sentence on what you found), "candidates": [ up to 6 of {"title": string (e.g. "2.5 ac – Interlachen"), "price": integer, "acres": number, "pricePerAcre": integer, "estMarketValue": integer (your comp-based estimate of full retail value), "source": string (site name), "url": string (listing URL if known, else ""), "note": string (1 sentence: why it is or isn't interesting - access, location, discount), "grade": "HOT" | "WORTH A LOOK" | "MARGINAL" } ] }. Grade HOT only if price is near or under 40% of estimated market value. Most retail listings are MARGINAL - be honest. If you find nothing under the max price, return an empty candidates array and say so in searchSummary. Never invent listings.`,
+        true, 2500
+      );
+      const clean = text.replace(/```json|```/g, "").trim();
+      const s = clean.indexOf("{"), e = clean.lastIndexOf("}");
+      setResult(JSON.parse(clean.slice(s, e + 1)));
+    } catch {
+      setErr("Search failed — try again, or a different county.");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontWeight: 900, fontSize: 20, color: P.text, letterSpacing: "-0.02em" }}>🎯 Deal Finder</div>
+        <div style={{ color: P.muted, fontSize: 13, marginTop: 4 }}>AI scans live listings for cheap parcels in your budget. Verify everything before offering.</div>
+      </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
+          <Inp label="County" value={county} onChange={setCounty} placeholder="Putnam" />
+          <Inp label="State" value={state} onChange={setState} placeholder="Florida" />
+          <Inp label="Max Price ($)" value={maxPrice} onChange={setMaxPrice} type="number" placeholder="6000" />
+        </div>
+        {B.isSet && (
+          <div style={{ fontSize: 11, color: P.muted, marginBottom: 12 }}>
+            💰 Your Budget Engine says max purchase today is <strong style={{ color: P.greenBr }}>${B.maxPurchase.toLocaleString()}</strong>.
+          </div>
+        )}
+        <Btn onClick={run} loading={loading} disabled={!county || !state || !maxPrice}>
+          🎯 Find Parcels
+        </Btn>
+        {loading && <div style={{ fontSize: 12, color: P.muted, marginTop: 10 }}>Searching listing sites — this takes 30–45 seconds…</div>}
+        {err && <div style={{ color: P.red, fontSize: 13, marginTop: 10 }}>⚠️ {err}</div>}
+      </Card>
+
+      {result && (
+        <React.Fragment>
+          <Card style={{ marginBottom: 14, background: "#E9F0E2", border: `1px solid ${P.green}33` }}>
+            <div style={{ fontSize: 13, color: P.text, lineHeight: 1.6 }}>{result.searchSummary}</div>
+          </Card>
+
+          {(result.candidates || []).length === 0 ? (
+            <Card style={{ textAlign: "center", padding: 30 }}>
+              <div style={{ fontSize: 26, marginBottom: 6 }}>🌵</div>
+              <div style={{ color: P.muted, fontSize: 13 }}>Nothing under budget in this county right now. Try a neighboring county — or remember: the best deals come from blind offers, not listings.</div>
+            </Card>
+          ) : (result.candidates || []).map((c, i) => {
+            const disc = c.estMarketValue > 0 ? Math.round((c.price / c.estMarketValue) * 100) : null;
+            return (
+              <Card key={i} style={{ marginBottom: 10, background: P.card2 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: P.text }}>{c.title}</div>
+                    <div style={{ fontSize: 12, color: P.muted, marginTop: 2 }}>
+                      {c.source}{disc !== null ? ` · listed at ~${disc}% of est. value` : ""}
+                    </div>
+                  </div>
+                  <Badge color={gradeColor(c.grade)}>{c.grade}</Badge>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 10, textAlign: "center", marginBottom: 10 }}>
+                  {[
+                    { l: "Price", v: `$${(c.price || 0).toLocaleString()}`, cc: P.blue },
+                    { l: "Acres", v: c.acres, cc: P.text },
+                    { l: "$/Acre", v: `$${(c.pricePerAcre || 0).toLocaleString()}`, cc: P.text },
+                    { l: "Est. Value", v: `$${(c.estMarketValue || 0).toLocaleString()}`, cc: P.greenBr },
+                  ].map(({ l, v, cc }) => (
+                    <div key={l} style={{ background: P.bg, borderRadius: 8, padding: "10px 6px", border: `1px solid ${P.border}` }}>
+                      <div style={{ fontSize: 16, fontWeight: 900, color: cc }}>{v}</div>
+                      <div style={{ fontSize: 10, color: P.muted, marginTop: 3 }}>{l}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ fontSize: 13, color: P.muted, lineHeight: 1.55, marginBottom: 12, paddingLeft: 10, borderLeft: `2px solid ${P.border2}` }}>
+                  {c.note}
+                </div>
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Btn small onClick={() => onAnalyze(c)}>📊 Send to Analyzer</Btn>
+                  {c.url && (
+                    <a href={c.url} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                      <Btn small outline>🔗 View Listing</Btn>
+                    </a>
+                  )}
+                </div>
+              </Card>
+            );
+          })}
+
+          <div style={{ fontSize: 11, color: P.faint, marginTop: 12, lineHeight: 1.6 }}>
+            ⚠️ AI search results can be outdated or imprecise. Always open the listing, verify price and acreage, and run full due diligence before any offer.
+          </div>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
 // ─── DEAL ANALYZER ──────────────────────────────────────────────────────────
-function DealAnalyzer({ deals, budget }) {
+function DealAnalyzer({ deals, budget, prefill }) {
   const [mktVal, setMktVal] = useState("");
   const [askPx,  setAskPx]  = useState("");
   const [acres,  setAcres]  = useState("");
+
+  useEffect(() => {
+    if (!prefill) return;
+    if (prefill.price) setAskPx(String(prefill.price));
+    if (prefill.acres) setAcres(String(prefill.acres));
+    if (prefill.estMarketValue) setMktVal(String(prefill.estMarketValue));
+  }, [prefill]);
 
   const mv = Number(mktVal) || 0;
   const ap = Number(askPx) || 0;
@@ -1103,6 +1229,7 @@ function DueDiligence({ deals, setDeals }) {
 function App() {
   const [tab,    setTab]    = useState("dash");
   const [deals,  setDeals]  = useState([]);
+  const [analyzerPrefill, setAnalyzerPrefill] = useState(null);
   const [budget, setBudget] = useState({ cash: "", reserve: "", mail: "" });
   const [ready,  setReady]  = useState(false);
 
@@ -1114,6 +1241,7 @@ function App() {
     { id: "dash",     icon: "🏠", label: "Dashboard" },
     { id: "budget",   icon: "💰", label: "Budget" },
     { id: "scout",    icon: "🔍", label: "Market Scout" },
+    { id: "finder",   icon: "🎯", label: "Deal Finder" },
     { id: "analyzer", icon: "📊", label: "Deal Analyzer" },
     { id: "offer",    icon: "✉️", label: "Offer Writer" },
     { id: "pipeline", icon: "📋", label: "Pipeline" },
@@ -1162,7 +1290,8 @@ function App() {
         {tab === "dash"     && <Dashboard    deals={deals} budget={budget} />}
         {tab === "budget"   && <BudgetEngine deals={deals} budget={budget} setBudget={setBudget} />}
         {tab === "scout"    && <MarketScout />}
-        {tab === "analyzer" && <DealAnalyzer deals={deals} budget={budget} />}
+        {tab === "finder"   && <DealFinder deals={deals} budget={budget} onAnalyze={c => { setAnalyzerPrefill(c); setTab("analyzer"); }} />}
+        {tab === "analyzer" && <DealAnalyzer deals={deals} budget={budget} prefill={analyzerPrefill} />}
         {tab === "offer"    && <OfferWriter />}
         {tab === "pipeline" && <Pipeline     deals={deals} setDeals={setDeals} />}
         {tab === "dd"       && <DueDiligence deals={deals} setDeals={setDeals} />}
