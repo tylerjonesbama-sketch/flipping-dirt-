@@ -9,7 +9,7 @@
 // but a determined attacker can still spoof headers — for stronger protection
 // put the whole app behind Vercel's Deployment Protection or a login.
 
-const ALLOWED_MODEL = "claude-sonnet-4-6";
+const ALLOWED_MODEL = "claude-sonnet-5";
 const MAX_TOKENS_CAP = 3000;
 const RATE_LIMIT = 30;                  // requests
 const RATE_WINDOW_MS = 60 * 60 * 1000;  // per hour, per IP

@@ -157,7 +157,7 @@ function computeBudget(budget, deals) {
 // ─── CLAUDE API (via /api/claude serverless proxy) ──────────────────────────
 async function askClaude(prompt, system, webSearch = false, maxTokens = 1500) {
   const body = {
-    model: "claude-sonnet-4-6",
+    model: "claude-sonnet-5",
     max_tokens: maxTokens,
     system,
     messages: [{ role: "user", content: prompt }],
