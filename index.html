@@ -168,9 +168,8 @@ async function askClaude(prompt, system, webSearch = false, maxTokens = 1500) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error("API request failed");
-  const d = await r.json();
-  if (d.error) throw new Error(d.error.message || "API error");
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) throw new Error((d.error && d.error.message) || `Request failed (HTTP ${r.status})`);
   return (d.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
 }
 
@@ -486,8 +485,8 @@ function MarketScout() {
       const clean = text.replace(/```json|```/g, "").trim();
       const s = clean.indexOf("{"), e = clean.lastIndexOf("}");
       setResult(JSON.parse(clean.slice(s, e + 1)));
-    } catch {
-      setErr("Research failed — try a different county or check your connection.");
+    } catch (e) {
+      setErr(e.message || "Research failed — try a different county or check your connection.");
     }
     setLoading(false);
   };
@@ -718,8 +717,8 @@ function DealFinder({ deals, budget, setDeals, onAnalyze }) {
       const clean = text.replace(/```json|```/g, "").trim();
       const s = clean.indexOf("{"), e = clean.lastIndexOf("}");
       setResult(JSON.parse(clean.slice(s, e + 1)));
-    } catch {
-      setErr("Search failed — try again, or a different county.");
+    } catch (e) {
+      setErr(e.message || "Search failed — try again, or a different county.");
     }
     setLoading(false);
   };
@@ -967,8 +966,8 @@ Warm, professional tone. Under 250 words. Mention: exact offer amount, no inspec
         `You are a professional land acquisition specialist who writes effective, friendly blind offer letters that motivate sellers to respond. Write in plain text only — no markdown, no bullets, no symbols.`
       );
       setLetter(txt);
-    } catch {
-      setLetter("Error generating letter. Please try again.");
+    } catch (e) {
+      setLetter("Error generating letter: " + (e.message || "please try again."));
     }
     setLoading(false);
   };
