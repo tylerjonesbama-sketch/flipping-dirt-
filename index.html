@@ -668,7 +668,7 @@ function ProfitSimulator({ mv, budgetInfo }) {
 }
 
 // ─── DEAL FINDER ────────────────────────────────────────────────────────────
-function DealFinder({ deals, budget, onAnalyze }) {
+function DealFinder({ deals, budget, setDeals, onAnalyze }) {
   const B = computeBudget(budget, deals);
   const [county,   setCounty]   = useState("");
   const [state,    setState]    = useState("Florida");
@@ -676,8 +676,35 @@ function DealFinder({ deals, budget, onAnalyze }) {
   const [loading,  setLoading]  = useState(false);
   const [result,   setResult]   = useState(null);
   const [err,      setErr]      = useState("");
+  const [added,    setAdded]    = useState(new Set());
 
   const gradeColor = g => g === "HOT" ? P.greenBr : g === "WORTH A LOOK" ? P.amber : P.muted;
+
+  const addToPipeline = async (c, i) => {
+    const offerPrice = c.estMarketValue ? Math.round(c.estMarketValue * 0.30) : (Number(c.price) || "");
+    const closing     = c.estMarketValue ? Math.round(c.estMarketValue * 0.03) : 0;
+    const estimatedProfit = c.estMarketValue && offerPrice
+      ? Math.max(0, c.estMarketValue - offerPrice - closing)
+      : "";
+    const deal = {
+      id: Date.now().toString() + "-" + i,
+      name: c.title || `${county} County, ${state}`,
+      county: `${county}, ${state}`,
+      acres: c.acres || "",
+      askPrice: c.price || "",
+      offerPrice: offerPrice || "",
+      estimatedProfit: estimatedProfit || "",
+      stage: "Lead",
+      notes: [c.note, c.source ? `Source: ${c.source}` : "", c.url || ""].filter(Boolean).join(" — "),
+      createdAt: new Date().toLocaleDateString(),
+      profit: 0,
+      ddComplete: {},
+    };
+    const updated = [deal, ...deals];
+    await saveDeals(updated);
+    setDeals(updated);
+    setAdded(prev => new Set(prev).add(i));
+  };
 
   const run = async () => {
     if (!county || !state || !maxPrice) return;
@@ -767,6 +794,9 @@ function DealFinder({ deals, budget, onAnalyze }) {
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <Btn small onClick={() => onAnalyze(c)}>📊 Send to Analyzer</Btn>
+                  <Btn small outline color={added.has(i) ? P.greenBr : undefined} disabled={added.has(i)} onClick={() => addToPipeline(c, i)}>
+                    {added.has(i) ? "✅ Added to Pipeline" : "➕ Add to Pipeline"}
+                  </Btn>
                   {c.url && (
                     <a href={c.url} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
                       <Btn small outline>🔗 View Listing</Btn>
@@ -1290,7 +1320,7 @@ function App() {
         {tab === "dash"     && <Dashboard    deals={deals} budget={budget} />}
         {tab === "budget"   && <BudgetEngine deals={deals} budget={budget} setBudget={setBudget} />}
         {tab === "scout"    && <MarketScout />}
-        {tab === "finder"   && <DealFinder deals={deals} budget={budget} onAnalyze={c => { setAnalyzerPrefill(c); setTab("analyzer"); }} />}
+        {tab === "finder"   && <DealFinder deals={deals} budget={budget} setDeals={setDeals} onAnalyze={c => { setAnalyzerPrefill(c); setTab("analyzer"); }} />}
         {tab === "analyzer" && <DealAnalyzer deals={deals} budget={budget} prefill={analyzerPrefill} />}
         {tab === "offer"    && <OfferWriter />}
         {tab === "pipeline" && <Pipeline     deals={deals} setDeals={setDeals} />}
